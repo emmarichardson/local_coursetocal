@@ -1,0 +1,235 @@
+name: Moodle CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      moodle_branch:
+        description: 'Moodle branch'
+        required: true
+        default: 'MOODLE_500_STABLE'
+      php:
+        description: 'PHP version'
+        required: true
+        default: '8.2'
+      db:
+        description: 'Database'
+        required: true
+        default: 'mariadb'
+        type: choice
+        options: [mariadb, pgsql]
+      run_phpunit:
+        description: 'Run PHPUnit'
+        required: true
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+      run_behat:
+        description: 'Run Behat (chrome)'
+        required: true
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
+
+jobs:
+  # Lint/style/validate don’t need DB/Selenium.
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php }}
+          extensions: pgsql, mysqli, zip, gd, soap, xmlrpc
+          ini-values: max_input_vars=5000
+          coverage: none
+
+      - name: Install moodle-plugin-ci
+        run: |
+          composer global require --no-interaction moodlehq/moodle-plugin-ci:^4
+          echo "$HOME/.composer/vendor/bin" >> $GITHUB_PATH
+
+      - name: Init moodle-plugin-ci (no DB)
+        run: |
+          moodle-plugin-ci install --branch ${{ inputs.moodle_branch }} --pluginsource plugin
+
+      - name: PHP Lint
+        run: moodle-plugin-ci phplint
+
+      - name: Code checker
+        run: moodle-plugin-ci codechecker --max-warnings=-1
+
+      - name: Validate plugin
+        run: moodle-plugin-ci validate
+
+      - name: Grunt
+        run: moodle-plugin-ci grunt
+
+  phpunit-mariadb:
+    if: ${{ inputs.run_phpunit == 'true' && inputs.db == 'mariadb' }}
+    needs: static
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: moodle
+          MARIADB_USER: moodle
+          MARIADB_PASSWORD: moodle
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -hmariadb -pmoodle"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php }}
+          extensions: mysqli, zip, gd, soap, xmlrpc
+          ini-values: max_input_vars=5000
+          coverage: none
+      - name: Install moodle-plugin-ci
+        run: |
+          composer global require --no-interaction moodlehq/moodle-plugin-ci:^4
+          echo "$HOME/.composer/vendor/bin" >> $GITHUB_PATH
+      - name: Init moodle-plugin-ci
+        run: |
+          moodle-plugin-ci install \
+            --branch ${{ inputs.moodle_branch }} \
+            --db-host 127.0.0.1 --db-user moodle --db-pass moodle --db-name moodle \
+            --db-type mariadb \
+            --pluginsource plugin
+      - name: PHPUnit
+        run: moodle-plugin-ci phpunit
+
+  phpunit-pgsql:
+    if: ${{ inputs.run_phpunit == 'true' && inputs.db == 'pgsql' }}
+    needs: static
+    runs-on: ubuntu-latest
+    services:
+      pgsql:
+        image: postgres:14
+        env:
+          POSTGRES_DB: moodle
+          POSTGRES_USER: moodle
+          POSTGRES_PASSWORD: moodle
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd="pg_isready -U moodle -d moodle"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php }}
+          extensions: pgsql, zip, gd, soap, xmlrpc
+          ini-values: max_input_vars=5000
+          coverage: none
+      - name: Install moodle-plugin-ci
+        run: |
+          composer global require --no-interaction moodlehq/moodle-plugin-ci:^4
+          echo "$HOME/.composer/vendor/bin" >> $GITHUB_PATH
+      - name: Init moodle-plugin-ci
+        run: |
+          moodle-plugin-ci install \
+            --branch ${{ inputs.moodle_branch }} \
+            --db-host 127.0.0.1 --db-user moodle --db-pass moodle --db-name moodle \
+            --db-type pgsql \
+            --pluginsource plugin
+      - name: PHPUnit
+        run: moodle-plugin-ci phpunit
+
+  behat-mariadb:
+    if: ${{ inputs.run_behat == 'true' && inputs.db == 'mariadb' }}
+    needs: static
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: moodle
+          MARIADB_USER: moodle
+          MARIADB_PASSWORD: moodle
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -hmariadb -pmoodle"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+      selenium:
+        image: selenium/standalone-chrome:4
+        ports: ['4444:4444']
+        options: --shm-size="2g"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php }}
+          extensions: mysqli, zip, gd, soap, xmlrpc
+          ini-values: max_input_vars=5000
+          coverage: none
+      - name: Install moodle-plugin-ci
+        run: |
+          composer global require --no-interaction moodlehq/moodle-plugin-ci:^4
+          echo "$HOME/.composer/vendor/bin" >> $GITHUB_PATH
+      - name: Init moodle-plugin-ci
+        run: |
+          moodle-plugin-ci install \
+            --branch ${{ inputs.moodle_branch }} \
+            --db-host 127.0.0.1 --db-user moodle --db-pass moodle --db-name moodle \
+            --db-type mariadb \
+            --pluginsource plugin
+      - name: Behat (chrome)
+        run: moodle-plugin-ci behat --profile chrome
+
+  behat-pgsql:
+    if: ${{ inputs.run_behat == 'true' && inputs.db == 'pgsql' }}
+    needs: static
+    runs-on: ubuntu-latest
+    services:
+      pgsql:
+        image: postgres:14
+        env:
+          POSTGRES_DB: moodle
+          POSTGRES_USER: moodle
+          POSTGRES_PASSWORD: moodle
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd="pg_isready -U moodle -d moodle"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+      selenium:
+        image: selenium/standalone-chrome:4
+        ports: ['4444:4444']
+        options: --shm-size="2g"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ inputs.php }}
+          extensions: pgsql, zip, gd, soap, xmlrpc
+          ini-values: max_input_vars=5000
+          coverage: none
+      - name: Install moodle-plugin-ci
+        run: |
+          composer global require --no-interaction moodlehq/moodle-plugin-ci:^4
+          echo "$HOME/.composer/vendor/bin" >> $GITHUB_PATH
+      - name: Init moodle-plugin-ci
+        run: |
+          moodle-plugin-ci install \
+            --branch ${{ inputs.moodle_branch }} \
+            --db-host 127.0.0.1 --db-user moodle --db-pass moodle --db-name moodle \
+            --db-type pgsql \
+            --pluginsource plugin
+      - name: Behat (chrome)
+        run: moodle-plugin-ci behat --profile chrome
